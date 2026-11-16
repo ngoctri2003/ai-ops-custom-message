@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Ops: gửi tin tùy chỉnh</title>
+<style>
+  :root { font-family: system-ui, sans-serif; color: #1d1c1d; }
+  body { max-width: 760px; margin: 24px auto; padding: 0 16px; }
+  h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin-top: 28px; }
+  label { display: block; margin: 12px 0 4px; font-weight: 600; }
+  textarea, input[type=text], input[type=password], input[type=date], input[type=time], select { width: 100%; box-sizing: border-box; padding: 8px; font: inherit; }
+  textarea { min-height: 140px; }
+  .box { border: 1px solid #ccc; border-radius: 6px; padding: 8px; max-height: 170px; overflow: auto; }
+  .box label { font-weight: 400; margin: 2px 0; display: flex; gap: 6px; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; } .row > div { flex: 1; min-width: 150px; }
+  button { padding: 8px 16px; font: inherit; cursor: pointer; margin-top: 12px; }
+  .err { color: #b00020; font-size: .9rem; } .muted { color: #666; font-size: .9rem; }
+  .card { border: 1px solid #ccc; border-radius: 6px; padding: 12px; margin-top: 12px; background: #fafafa; }
+  pre { white-space: pre-wrap; margin: 4px 0; font: inherit; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<h1>AI Ops: gửi tin tùy chỉnh</h1>
+
+<section id="login" class="hidden">
+  <label>Tài khoản <input type="text" id="u" autocomplete="username"></label>
+  <label>Mật khẩu <input type="password" id="p" autocomplete="current-password"></label>
+  <button id="loginBtn">Đăng nhập</button> <span id="loginErr" class="err"></span>
+</section>
+
+<section id="app" class="hidden">
+  <p class="muted"><a href="#" id="logout">Đăng xuất</a></p>
+
+  <label for="text">Nội dung (hỗ trợ định dạng Slack)</label>
+  <textarea id="text" maxlength="3500"></textarea><div class="err" id="e_text"></div>
+
+  <label>Channel</label>
+  <input type="text" id="chFilter" placeholder="Lọc channel">
+  <div class="box" id="channels"></div><div class="err" id="e_channels"></div>
+
+  <label>Mention user group (trong channel đã chọn)</label>
+  <div class="box" id="usergroups"></div><div class="err" id="e_usergroups"></div>
+
+  <label>DM cho danh sách người nhận</label>
+  <div class="box" id="lists"></div><div class="err" id="e_lists"></div>
+
+  <label>Thông báo cả channel</label>
+  <div class="row"><label><input type="radio" name="mention" value="none" checked> Không</label>
+  <label><input type="radio" name="mention" value="channel"> @channel</label>
+  <label><input type="radio" name="mention" value="here"> @here</label></div>
+  <div class="err" id="e_mention"></div>
+
+  <label>Thời điểm (giờ Việt Nam)</label>
+  <div class="row"><label><input type="radio" name="when" value="now" checked> Gửi ngay</label>
+  <label><input type="radio" name="when" value="schedule"> Đặt lịch</label></div>
+  <div id="sched" class="hidden">
+    <div class="row">
+      <div><label>Lặp lại <select id="rule"></select></label></div>
+      <div id="dateWrap"><label>Ngày <input type="date" id="date"></label><div class="err" id="e_date"></div></div>
+      <div><label>Giờ <input type="time" id="time"></label><div class="err" id="e_time"></div></div>
+      <div id="untilWrap" class="hidden"><label>Lặp đến ngày <input type="date" id="until"></label><div class="err" id="e_until"></div></div>
+    </div>
+    <p class="muted">Lịch lặp được tạo thành từng tin đặt lịch riêng trên Slack (tối đa 60 lần, trong 119 ngày). Hết hạn thì tạo lại.</p>
+  </div>
+
+  <button id="previewBtn">Xem trước</button> <span id="formErr" class="err"></span>
+
+  <div id="preview" class="card hidden">
+    <strong>Xem trước</strong>
+    <pre id="pvText"></pre>
+    <div id="pvMeta" class="muted"></div>
+    <button id="confirmBtn">Xác nhận</button> <button id="backBtn">Sửa lại</button>
+  </div>
+  <div id="result" class="card hidden"></div>
+
+  <h2>Tin đã đặt lịch</h2>
+  <button id="refreshBtn">Tải lại</button>
+  <div id="scheduled"></div>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const api = async (path, method = 'GET', body) => {
+  const res = await fetch('/api/' + path, {
+    method, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'aiops-web' },
+    body: body ? JSON.stringify(body) : undefined });
+  let data = {}; try { data = await res.json(); } catch (e) {}
+  return { status: res.status, data };
+};
+const checked = name => [...document.querySelectorAll(`input[name=${name}]:checked`)].map(i => i.value);
+const radio = name => document.querySelector(`input[name=${name}]:checked`).value;
+const el = (tag, props = {}, ...kids) => { const n = Object.assign(document.createElement(tag), props); kids.forEach(k => n.append(k)); return n; };
+const clearErrors = () => document.querySelectorAll('.err').forEach(e => e.textContent = '');
+let channelData = [];
+
+function checkboxes(container, name, items) {
+  container.replaceChildren(...items.map(i => el('label', {}, el('input', { type: 'checkbox', name, value: i.value }), i.label)));
+}
+function renderChannels() {
+  const q = $('chFilter').value.toLowerCase();
+  const keep = new Set(checked('channels'));
+  const items = channelData.filter(c => c.name.toLowerCase().includes(q) || keep.has(c.id))
+    .map(c => ({ value: c.id, label: (c.private ? '🔒 ' : '#') + c.name + (c.private || c.member ? '' : ' (bot chưa vào, vẫn gửi được)') }));
+  checkboxes($('channels'), 'channels', items);
+  keep.forEach(v => { const i = document.querySelector(`input[name=channels][value="${v}"]`); if (i) i.checked = true; });
+}
+function collect(dryRun) {
+  return { text: $('text').value, channels: checked('channels'), usergroups: checked('usergroups'),
+    lists: checked('lists'), mention: radio('mention'), when: radio('when'), rule: $('rule').value,
+    date: $('date').value, time: $('time').value, until: $('until').value, dry_run: dryRun };
+}
+function syncSchedule() {
+  const sched = radio('when') === 'schedule', once = $('rule').value === 'once';
+  $('sched').classList.toggle('hidden', !sched);
+  $('dateWrap').classList.toggle('hidden', !once);
+  $('untilWrap').classList.toggle('hidden', once);
+}
+async function boot() {
+  const r = await api('options');
+  if (r.status === 401) { $('login').classList.remove('hidden'); $('app').classList.add('hidden'); return; }
+  if (r.status !== 200) { $('login').classList.remove('hidden'); $('loginErr').textContent = 'Chưa cấu hình hoặc lỗi máy chủ.'; return; }
+  $('login').classList.add('hidden'); $('app').classList.remove('hidden');
+  channelData = r.data.channels; renderChannels();
+  checkboxes($('usergroups'), 'usergroups', r.data.usergroups.map(g => ({ value: g.id, label: '@' + g.handle })));
+  if (!r.data.usergroups.length) $('usergroups').textContent = 'Không có (hoặc bot chưa có scope usergroups:read).';
+  checkboxes($('lists'), 'lists', r.data.lists.map(l => ({ value: l.name, label: `${l.name} (${l.count} người)` })));
+  if (!r.data.lists.length) $('lists').textContent = 'Chưa cấu hình danh sách người nhận.';
+  $('rule').replaceChildren(...Object.entries(r.data.rules).map(([v, l]) => el('option', { value: v, textContent: l })));
+  syncSchedule(); loadScheduled();
+}
+async function loadScheduled() {
+  const r = await api('scheduled');
+  const box = $('scheduled'); box.replaceChildren();
+  if (r.status !== 200) { box.textContent = 'Không tải được danh sách (có thể thiếu quyền của bot).'; return; }
+  if (!r.data.items.length) { box.textContent = 'Không có tin nào đang chờ.'; return; }
+  r.data.items.forEach(m => {
+    const btn = el('button', { textContent: 'Huỷ' });
+    btn.onclick = async () => { btn.disabled = true; await api('cancel', 'POST', { channel: m.channel, id: m.id }); loadScheduled(); };
+    box.append(el('div', { className: 'card' }, el('div', { className: 'muted', textContent: `${m.when} · ${m.channel}` }), el('pre', { textContent: m.text }), btn));
+  });
+}
+function showErrors(errors) {
+  clearErrors();
+  Object.entries(errors).forEach(([k, v]) => { const e = $('e_' + k); if (e) e.textContent = v; else $('formErr').textContent = v; });
+}
+$('loginBtn').onclick = async () => {
+  const r = await api('login', 'POST', { username: $('u').value, password: $('p').value });
+  if (r.status === 200) { $('p').value = ''; boot(); }
+  else $('loginErr').textContent = r.status === 401 ? 'Sai tài khoản hoặc mật khẩu.' : 'Chưa đăng nhập được.';
+};
+$('logout').onclick = async e => { e.preventDefault(); await api('logout', 'POST', {}); location.reload(); };
+$('chFilter').oninput = renderChannels;
+document.querySelectorAll('input[name=when]').forEach(i => i.onchange = syncSchedule);
+$('rule').onchange = syncSchedule;
+$('previewBtn').onclick = async () => {
+  clearErrors(); $('result').classList.add('hidden');
+  const r = await api('send', 'POST', collect(true));
+  if (r.status !== 200) { showErrors(r.data.errors || { form: 'Lỗi máy chủ.' }); return; }
+  const p = r.data.preview;
+  $('pvText').textContent = p.channel_text;
+  const meta = [];
+  if (p.channels.length) meta.push(`${p.channels.length} channel`);
+  if (p.recipients) meta.push(`DM ${p.recipients} người`);
+  meta.push(p.when === 'now' ? 'Gửi ngay' : `Đặt lịch ${p.run_count} lần: ${p.runs.join(', ')}${p.run_count > p.runs.length ? ', ...' : ''}`);
+  if (p.mention !== 'none') meta.push(`⚠ dùng @${p.mention}`);
+  $('pvMeta').textContent = meta.join(' · ');
+  $('preview').classList.remove('hidden');
+};
+$('backBtn').onclick = () => $('preview').classList.add('hidden');
+$('confirmBtn').onclick = async () => {
+  $('confirmBtn').disabled = true;
+  const r = await api('send', 'POST', collect(false));
+  $('confirmBtn').disabled = false; $('preview').classList.add('hidden');
+  const box = $('result'); box.classList.remove('hidden'); box.replaceChildren();
+  if (r.status !== 200) { box.textContent = 'Không gửi được: ' + JSON.stringify(r.data.errors || r.data.error || r.status); return; }
+  box.append(el('strong', { textContent: `Đã xử lý ${r.data.sent}/${r.data.total} tin.` }));
+  r.data.results.filter(x => !x.ok).forEach(x => box.append(el('div', { className: 'err', textContent: `Lỗi ${x.target}${x.run ? ' (' + x.run + ')' : ''}: ${x.error}` })));
+  if (r.data.hint) box.append(el('div', { className: 'muted', textContent: r.data.hint }));
+  loadScheduled();
+};
+$('refreshBtn').onclick = loadScheduled;
+boot();
+</script>
+</body>
+</html>
