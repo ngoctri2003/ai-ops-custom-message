@@ -1,10 +1,11 @@
 """HTTP glue for Vercel Python functions (BaseHTTPRequestHandler style)."""
+import hmac
 import json
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 
-from . import auth, config, routes
+from . import auth, config, notify, routes
 from .slack import Slack
 
 CSRF_HEADER = ("X-Requested-With", "aiops-web")
@@ -75,6 +76,24 @@ class BaseHandler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001  (never leak internals)
             return self._send(500, {"error": "server_error"})
 
+    def serve_machine(self, fn) -> None:
+        """Token-authenticated POST for automation. Cookies are ignored. Fails closed."""
+        try:
+            expected = config.notify_token()
+            token = config.bot_token()
+            if not expected or not token or not config.notify_users() or not config.notify_channels():
+                return self._send(503, {"error": "not_configured"})
+            given = self.headers.get("X-Aiops-Token") or ""
+            if not hmac.compare_digest(given.encode(), expected.encode()):
+                return self._send(401, {"error": "invalid_token"})
+            body = self._body()
+            if body is None:
+                return self._send(400, {"error": "bad_body"})
+            status, obj = fn(Slack(token), body, datetime.now(config.TZ))
+            return self._send(status, obj)
+        except Exception:  # noqa: BLE001  (never leak internals)
+            return self._send(500, {"error": "server_error"})
+
     def log_message(self, *args):  # keep platform logs free of request details
         pass
 
@@ -107,3 +126,7 @@ def r_scheduled(slack, body, now):
 
 def r_cancel(slack, body, now):
     return routes.cancel(slack, body)
+
+
+def r_notify(slack, body, now):
+    return notify.deliver(slack, body)

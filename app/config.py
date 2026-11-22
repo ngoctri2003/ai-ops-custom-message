@@ -52,3 +52,22 @@ def recipient_lists() -> dict[str, list[str]]:
     if not isinstance(data, dict):
         return {}
     return {str(k): [str(u) for u in v] for k, v in data.items() if isinstance(v, list)}
+
+
+def notify_token() -> str | None:
+    """Shared secret for the machine endpoint (header X-Aiops-Token)."""
+    return os.environ.get("NOTIFY_TOKEN") or None
+
+
+def _id_set(name: str) -> set[str]:
+    return {c.strip() for c in os.environ.get(name, "").split(",") if c.strip()}
+
+
+def notify_users() -> set[str]:
+    """Slack user IDs the machine endpoint may DM or mention."""
+    return _id_set("NOTIFY_ALLOWED_USERS")
+
+
+def notify_channels() -> set[str]:
+    """Channel IDs the machine endpoint may post to."""
+    return _id_set("NOTIFY_ALLOWED_CHANNELS")

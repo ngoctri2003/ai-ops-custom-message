@@ -45,3 +45,20 @@ Test: `pip install -r requirements-dev.txt && pytest -q`
 
 ## Chính sách
 Chính sách AI của công ty cấm AI gửi tin Slack vào kênh khách hàng và kênh nội bộ. Ở đây người soạn xem trước và xác nhận từng tin; chị Quyên nên xác nhận phù hợp chính sách trước khi dùng rộng.
+
+
+## Machine endpoint: POST /api/notify (Atlassian News approval flow)
+
+Token-authenticated (header `X-Aiops-Token`), no cookie, fails closed.
+Body: `{"action": "dm"|"channel", "target": "<user or channel id>", "text": "...", "dry_run": false}`.
+
+Env vars (all required, otherwise it returns 503):
+- `NOTIFY_TOKEN`: shared secret, long random value.
+- `NOTIFY_ALLOWED_USERS`: comma-separated Slack user IDs that may be DM'd or mentioned.
+- `NOTIFY_ALLOWED_CHANNELS`: comma-separated channel IDs that may be posted to.
+
+Rules: text up to 1000 characters; `@channel`, `@here`, `@everyone` and user groups are rejected;
+mentions of users outside the allow-list are rejected. Idempotency is the caller's job
+(the approval artifact keeps a status per article, so an article is posted once).
+Vercel Deployment Protection must let the caller through (bypass secret) and the caller's
+network must be allowed to reach the deployment domain.
